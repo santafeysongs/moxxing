@@ -1,0 +1,16 @@
+{
+  "name": "@cultural-graph/analysis-engine",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@cultural-graph/shared": "*",
+    "sharp": "^0.34.5"
+  }
+}

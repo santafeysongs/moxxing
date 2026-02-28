@@ -1,0 +1,27 @@
+{
+  "name": "cultural-graph",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint"
+  },
+  "packageManager": "npm@10.9.4",
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@google/genai": "^1.42.0",
+    "@types/file-saver": "^2.0.7",
+    "file-saver": "^2.0.5",
+    "heic-convert": "^2.1.0",
+    "jszip": "^3.10.1",
+    "pptxgenjs": "^4.0.1"
+  }
+}
