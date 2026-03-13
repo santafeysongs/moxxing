@@ -2341,9 +2341,11 @@ app.post('/api/mockup/video', videoFields, async (req: any, res) => {
 
     console.log(`  ✓ Video ready: ${video.uri}`);
 
-    // Download the video
-    const videoResponse = await fetch(video.uri);
+    // Download the video (needs API key auth)
+    const videoUrl = video.uri + (video.uri.includes('?') ? '&' : '?') + 'key=' + process.env.GEMINI_API_KEY;
+    const videoResponse = await fetch(videoUrl);
     if (!videoResponse.ok) {
+      console.error(`  ✗ Video download failed: ${videoResponse.status} ${videoResponse.statusText}`);
       return res.status(500).json({ error: 'Failed to download video' });
     }
     let videoBuffer = Buffer.from(await videoResponse.arrayBuffer());

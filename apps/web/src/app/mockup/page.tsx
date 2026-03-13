@@ -351,9 +351,15 @@ export default function MockUpPage() {
       }
 
       const res = await fetch(`${API}/api/mockup/video`, { method: 'POST', body: formData });
-      const data = await res.json();
-      if (data.base64) {
-        setVideoResults(prev => new Map(prev).set(mockupId, data.base64));
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('Video generation failed:', err.error);
+        alert(`Video generation failed: ${err.error?.slice(0, 100)}`);
+      } else {
+        const data = await res.json();
+        if (data.base64) {
+          setVideoResults(prev => new Map(prev).set(mockupId, data.base64));
+        }
       }
     } catch (e) { console.error('Video generation failed:', e); }
     finally { setGeneratingVideoIds(prev => { const next = new Set(prev); next.delete(mockupId); return next; }); }
