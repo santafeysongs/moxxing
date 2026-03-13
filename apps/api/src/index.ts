@@ -2272,6 +2272,89 @@ app.post('/api/mockup/batch/rerun-single', batchFields, async (req: any, res) =>
   }
 });
 
+// ══════════════════════════════════════════════════════════════
+// VIDEO GENERATION — Veo 2.0 image-to-video via Google GenAI
+// ══════════════════════════════════════════════════════════════
+
+app.post('/api/mockup/video', express.json({ limit: '50mb' }), async (req, res) => {
+  try {
+    const { base64, prompt } = req.body;
+    if (!base64) return res.status(400).json({ error: 'No image provided' });
+
+    console.log(`\n🎬 Video generation starting...`);
+
+    const { GoogleGenAI } = require('@google/genai');
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+    // Resize image for Veo (keep reasonable size)
+    const sharpLib = require('sharp');
+    const buf = Buffer.from(base64, 'base64');
+    const resized = await sharpLib(buf)
+      .resize(1280, 720, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const videoPrompt = prompt || 'Subtle cinematic motion. Slow camera movement, atmospheric ambient motion, gentle parallax. Photorealistic, no morphing, no distortion.';
+
+    // Start async video generation
+    const op = await ai.models.generateVideos({
+      model: 'veo-2.0-generate-001',
+      image: {
+        imageBytes: resized.toString('base64'),
+        mimeType: 'image/jpeg',
+      },
+      prompt: videoPrompt,
+      config: {
+        numberOfVideos: 1,
+        durationSeconds: 8,
+      },
+    });
+
+    console.log(`  Operation: ${op.name}`);
+
+    // Poll for completion (timeout after 5 minutes)
+    const startTime = Date.now();
+    const TIMEOUT = 5 * 60 * 1000;
+    let result = op;
+
+    while (!result.done) {
+      if (Date.now() - startTime > TIMEOUT) {
+        return res.status(504).json({ error: 'Video generation timed out' });
+      }
+      await new Promise(r => setTimeout(r, 10000));
+      result = await ai.operations.getVideosOperation({ operation: result });
+      console.log(`  Polling... done: ${result.done}`);
+    }
+
+    const video = result.response?.generatedVideos?.[0]?.video;
+    if (!video?.uri) {
+      return res.status(500).json({ error: 'No video generated' });
+    }
+
+    console.log(`  ✓ Video ready: ${video.uri}`);
+
+    // Download the video and return as base64
+    const videoResponse = await fetch(video.uri);
+    if (!videoResponse.ok) {
+      return res.status(500).json({ error: 'Failed to download video' });
+    }
+    const videoBuffer = Buffer.from(await videoResponse.arrayBuffer());
+    const videoBase64 = videoBuffer.toString('base64');
+
+    console.log(`  ✓ Video downloaded: ${(videoBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+
+    res.json({
+      base64: videoBase64,
+      mimeType: 'video/mp4',
+      size: videoBuffer.length,
+      durationSeconds: 8,
+    });
+  } catch (e: any) {
+    console.error('Video generation failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(Number(PORT), '127.0.0.1', () => {
   console.log(`Cultural Graph API running on 127.0.0.1:${PORT}`);
 });

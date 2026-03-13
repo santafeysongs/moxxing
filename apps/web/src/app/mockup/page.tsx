@@ -33,6 +33,8 @@ export default function MockUpPage() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [batchPhotos, setBatchPhotos] = useState<File[]>([]);
   const [batchPrompt, setBatchPrompt] = useState('');
+  const [generatingVideoIds, setGeneratingVideoIds] = useState<Set<string>>(new Set());
+  const [videoResults, setVideoResults] = useState<Map<string, string>>(new Map()); // id -> base64
 
   const scrapedRefsRef = useRef<File[]>([]);
 
@@ -283,6 +285,33 @@ export default function MockUpPage() {
       } else { setStep('results'); }
     } catch (e) { console.error('Deck gen failed:', e); setStep('results'); }
     setGeneratingDeck(false);
+  };
+
+  const generateVideo = async (mockupId: string) => {
+    const mockup = mockups.find(m => m.id === mockupId);
+    if (!mockup) return;
+    setGeneratingVideoIds(prev => new Set(prev).add(mockupId));
+    try {
+      const res = await fetch(`${API}/api/mockup/video`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64: mockup.base64 }),
+      });
+      const data = await res.json();
+      if (data.base64) {
+        setVideoResults(prev => new Map(prev).set(mockupId, data.base64));
+      }
+    } catch (e) { console.error('Video generation failed:', e); }
+    finally { setGeneratingVideoIds(prev => { const next = new Set(prev); next.delete(mockupId); return next; }); }
+  };
+
+  const downloadVideo = (mockupId: string, idx: number) => {
+    const videoBase64 = videoResults.get(mockupId);
+    if (!videoBase64) return;
+    const link = document.createElement('a');
+    link.href = `data:video/mp4;base64,${videoBase64}`;
+    link.download = `mockup-${String(idx + 1).padStart(2, '0')}-video.mp4`;
+    link.click();
   };
 
   const downloadAll = async () => {
@@ -782,60 +811,119 @@ export default function MockUpPage() {
             onMouseLeave={() => setHoveredId(null)}
             onClick={() => setHoveredId(prev => prev === m.id ? null : m.id)}
           >
-            <img
-              src={`data:image/png;base64,${m.base64}`}
-              alt=""
-              style={{
-                width: '100%', height: '100%', objectFit: 'cover',
-                opacity: rerunningIds.has(m.id) ? 0.2 : 1,
-                transition: 'all 0.3s',
-                transform: hoveredId === m.id ? 'scale(1.03)' : 'scale(1)',
-              }}
-            />
-            {rerunningIds.has(m.id) && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-                  style={{ animation: 'mockup-spin 1s linear infinite' }}>
-                  <path d="M1 4v4h4" /><path d="M15 12V8h-4" />
-                  <path d="M13.5 5.5A6 6 0 0 0 3 4l-2 2" /><path d="M2.5 10.5A6 6 0 0 0 13 12l2-2" />
-                </svg>
+            {/* Video playback layer */}
+            {videoResults.has(m.id) && hoveredId === m.id ? (
+              <video
+                autoPlay loop muted playsInline
+                src={`data:video/mp4;base64,${videoResults.get(m.id)}`}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, zIndex: 1 }}
+              />
+            ) : (
+              <img
+                src={`data:image/png;base64,${m.base64}`}
+                alt=""
+                style={{
+                  width: '100%', height: '100%', objectFit: 'cover',
+                  opacity: (rerunningIds.has(m.id) || generatingVideoIds.has(m.id)) ? 0.2 : 1,
+                  transition: 'all 0.3s',
+                  transform: hoveredId === m.id ? 'scale(1.03)' : 'scale(1)',
+                }}
+              />
+            )}
+            {/* Loading spinner for rerun or video gen */}
+            {(rerunningIds.has(m.id) || generatingVideoIds.has(m.id)) && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 2 }}>
+                {generatingVideoIds.has(m.id) ? (
+                  <>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+                      style={{ animation: 'mockup-spin 2s linear infinite' }}>
+                      <circle cx="12" cy="12" r="10" strokeDasharray="31.4 31.4" />
+                    </svg>
+                    <span style={{ fontSize: '0.5rem', color: 'rgba(255,255,255,0.4)', marginTop: '8px', fontFamily: 'var(--font-unbounded)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Generating video</span>
+                  </>
+                ) : (
+                  <svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+                    style={{ animation: 'mockup-spin 1s linear infinite' }}>
+                    <path d="M1 4v4h4" /><path d="M15 12V8h-4" />
+                    <path d="M13.5 5.5A6 6 0 0 0 3 4l-2 2" /><path d="M2.5 10.5A6 6 0 0 0 13 12l2-2" />
+                  </svg>
+                )}
               </div>
             )}
             {/* Hover overlay */}
-            {hoveredId === m.id && !rerunningIds.has(m.id) && (
+            {hoveredId === m.id && !rerunningIds.has(m.id) && !generatingVideoIds.has(m.id) && (
               <div style={{
-                position: 'absolute', bottom: 0, left: 0, right: 0,
+                position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 3,
                 padding: '32px 12px 12px',
                 background: 'linear-gradient(transparent, rgba(0,0,0,0.7))',
                 display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
               }}>
-                <button
-                  onClick={(e) => { e.stopPropagation(); downloadSingle(m, idx); }}
-                  style={{
-                    background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '50%',
-                    width: '32px', height: '32px', cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    backdropFilter: 'blur(8px)',
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M8 2v9M4 8l4 4 4-4M2 14h12" />
-                  </svg>
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); rerunSingle(m.id); }}
-                  style={{
-                    background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '50%',
-                    width: '32px', height: '32px', cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    backdropFilter: 'blur(8px)',
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 4v4h4" /><path d="M15 12V8h-4" />
-                    <path d="M13.5 5.5A6 6 0 0 0 3 4l-2 2" /><path d="M2.5 10.5A6 6 0 0 0 13 12l2-2" />
-                  </svg>
-                </button>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); downloadSingle(m, idx); }}
+                    style={{
+                      background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '50%',
+                      width: '32px', height: '32px', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      backdropFilter: 'blur(8px)',
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M8 2v9M4 8l4 4 4-4M2 14h12" />
+                    </svg>
+                  </button>
+                  {/* Download video button (only if video exists) */}
+                  {videoResults.has(m.id) && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); downloadVideo(m.id, idx); }}
+                      style={{
+                        background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '50%',
+                        width: '32px', height: '32px', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        backdropFilter: 'blur(8px)',
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M8 2v9M4 8l4 4 4-4M2 14h12" />
+                        <circle cx="13" cy="3" r="2.5" fill="#fff" stroke="none" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  {/* Video generate button */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); generateVideo(m.id); }}
+                    title={videoResults.has(m.id) ? 'Regenerate video' : 'Generate video'}
+                    style={{
+                      background: videoResults.has(m.id) ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)',
+                      border: 'none', borderRadius: '50%',
+                      width: '32px', height: '32px', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      backdropFilter: 'blur(8px)',
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polygon points="23 7 16 12 23 17 23 7" fill="rgba(255,255,255,0.8)" />
+                      <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                    </svg>
+                  </button>
+                  {/* Rerun button */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); rerunSingle(m.id); }}
+                    style={{
+                      background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: '50%',
+                      width: '32px', height: '32px', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      backdropFilter: 'blur(8px)',
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 4v4h4" /><path d="M15 12V8h-4" />
+                      <path d="M13.5 5.5A6 6 0 0 0 3 4l-2 2" /><path d="M2.5 10.5A6 6 0 0 0 13 12l2-2" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             )}
           </div>
