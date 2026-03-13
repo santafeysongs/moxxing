@@ -2363,9 +2363,11 @@ app.post('/api/mockup/video', videoFields, async (req: any, res) => {
       fs.writeFileSync(audioPath, audioFile.buffer);
 
       try {
-        // Take first 8 seconds of audio, mux onto video, fade out last 1 second
+        // Use audioStart to pick the section of the song
+        const audioStart = parseFloat(req.body?.audioStart || '0') || 0;
+        // Take 8 seconds of audio starting at audioStart, fade out last 1 second
         execSync(
-          `ffmpeg -y -i "${videoPath}" -i "${audioPath}" -t 8 -filter_complex "[1:a]atrim=0:8,afade=t=out:st=7:d=1[a]" -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest "${outputPath}"`,
+          `ffmpeg -y -i "${videoPath}" -ss ${audioStart} -i "${audioPath}" -t 8 -filter_complex "[1:a]atrim=0:8,asetpts=PTS-STARTPTS,afade=t=out:st=7:d=1[a]" -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest "${outputPath}"`,
           { timeout: 30000 }
         );
         videoBuffer = fs.readFileSync(outputPath);
