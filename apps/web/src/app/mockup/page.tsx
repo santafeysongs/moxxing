@@ -487,7 +487,7 @@ export default function MockUpPage() {
         {/* Video background */}
         <video autoPlay loop muted playsInline src="/0227.mov" style={{
           position: 'fixed', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
-          zIndex: 0, opacity: 0.5,
+          zIndex: 0, opacity: 0.5, pointerEvents: 'none',
         }} />
         <div style={{ position: 'fixed', inset: 0, zIndex: 0, background: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.5) 100%)', pointerEvents: 'none' }} />
 
