@@ -8,7 +8,7 @@ const unbounded = Unbounded({ subsets: ['latin'], variable: '--font-unbounded', 
 const jetbrains = JetBrains_Mono({ subsets: ['latin'], variable: '--font-jetbrains' });
 
 export const metadata: Metadata = {
-  title: 'MOXX UP',
+  title: 'MOXXING',
   description: 'Put anyone anywhere',
 };
 

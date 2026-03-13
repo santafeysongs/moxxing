@@ -17,7 +17,7 @@ interface MockupImage {
 
 export default function MockUpPage() {
   const [step, setStep] = useState<Step>('upload');
-  const [mode, setMode] = useState<'scene' | 'wardrobe'>('scene');
+  const [mode, setMode] = useState<'scene' | 'wardrobe' | 'batch'>('scene');
   const [projectName, setProjectName] = useState('');
   const [artistPhotos, setArtistPhotos] = useState<File[]>([]);
   const [referencePhotos, setReferencePhotos] = useState<File[]>([]);
@@ -31,6 +31,8 @@ export default function MockUpPage() {
   const [deckId, setDeckId] = useState('');
   const [rerunningIds, setRerunningIds] = useState<Set<string>>(new Set());
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [batchPhotos, setBatchPhotos] = useState<File[]>([]);
+  const [batchPrompt, setBatchPrompt] = useState('');
 
   const scrapedRefsRef = useRef<File[]>([]);
 
@@ -38,6 +40,7 @@ export default function MockUpPage() {
   const thumbUrl = (f: File) => isHeic(f) ? null : URL.createObjectURL(f);
   const artistThumbs = useMemo(() => artistPhotos.map(f => thumbUrl(f)), [artistPhotos]);
   const refThumbs = useMemo(() => referencePhotos.map(f => thumbUrl(f)), [referencePhotos]);
+  const batchThumbs = useMemo(() => batchPhotos.map(f => thumbUrl(f)), [batchPhotos]);
 
   const handleArtistUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) setArtistPhotos(prev => [...prev, ...Array.from(e.target.files!)]);
@@ -47,7 +50,46 @@ export default function MockUpPage() {
     if (e.target.files) setReferencePhotos(prev => [...prev, ...Array.from(e.target.files!)]);
   }, []);
 
+  const handleBatchUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) setBatchPhotos(prev => [...prev, ...Array.from(e.target.files!)].slice(0, 50));
+  }, []);
+
   const generate = async () => {
+    // Batch mode has different requirements
+    if (mode === 'batch') {
+      if (batchPhotos.length === 0) return;
+      if (!batchPrompt.trim() && referencePhotos.length === 0) return;
+      setStep('generating');
+      setGenerating(true);
+      setGenPhase('generating');
+
+      const newSessionId = `batch-${Date.now()}`;
+      setSessionId(newSessionId);
+
+      const formData = new FormData();
+      batchPhotos.forEach(f => formData.append('photos', f));
+      referencePhotos.forEach(f => formData.append('reference_photos', f));
+      formData.append('prompt', batchPrompt);
+      formData.append('session_id', newSessionId);
+
+      try {
+        const res = await fetch(`${API}/api/mockup/batch`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.sessionId) setSessionId(data.sessionId);
+        if (data.images?.length) {
+          setMockups(data.images.map((img: any, i: number) => ({
+            id: img.id, base64: img.base64, refIndex: img.photoIndex ?? i, status: 'keep' as const,
+          })));
+          setStep('results');
+        } else { setStep('upload'); }
+      } catch (e) {
+        console.error('Batch generation failed:', e);
+        setStep('upload');
+      }
+      setGenerating(false);
+      return;
+    }
+
     if (artistPhotos.length === 0) return;
     setStep('generating');
     setGenerating(true);
@@ -124,6 +166,30 @@ export default function MockUpPage() {
   };
 
   const rerunSingle = async (mockupId: string) => {
+    if (mode === 'batch') {
+      // For batch mode, rerun the same source photo with same prompt
+      const mockup = mockups.find(m => m.id === mockupId);
+      if (!mockup) return;
+      const sourcePhoto = batchPhotos[mockup.refIndex];
+      if (!sourcePhoto) return;
+      setRerunningIds(prev => new Set(prev).add(mockupId));
+      try {
+        const formData = new FormData();
+        formData.append('photos', sourcePhoto);
+        referencePhotos.forEach(f => formData.append('reference_photos', f));
+        formData.append('prompt', batchPrompt);
+        const res = await fetch(`${API}/api/mockup/batch/rerun-single`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.image) {
+          setMockups(prev => prev.map(m =>
+            m.id === mockupId ? { ...m, id: data.image.id, base64: data.image.base64, status: 'keep' } : m
+          ));
+        }
+      } catch (e) { console.error('Rerun failed:', e); }
+      finally { setRerunningIds(prev => { const next = new Set(prev); next.delete(mockupId); return next; }); }
+      return;
+    }
+
     const allRefs = referencePhotos.length > 0 ? referencePhotos : scrapedRefsRef.current;
     if (allRefs.length === 0) return;
     setRerunningIds(prev => new Set(prev).add(mockupId));
@@ -147,6 +213,30 @@ export default function MockUpPage() {
   };
 
   const rerunAll = async () => {
+    if (mode === 'batch') {
+      // Re-run entire batch
+      setGenerating(true);
+      setStep('generating');
+      setGenPhase('generating');
+      const formData = new FormData();
+      batchPhotos.forEach(f => formData.append('photos', f));
+      referencePhotos.forEach(f => formData.append('reference_photos', f));
+      formData.append('prompt', batchPrompt);
+      formData.append('session_id', sessionId);
+      try {
+        const res = await fetch(`${API}/api/mockup/batch`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.images?.length) {
+          setMockups(data.images.map((img: any, i: number) => ({
+            id: img.id, base64: img.base64, refIndex: img.photoIndex ?? i, status: 'keep' as const,
+          })));
+          setStep('results');
+        } else { setStep('results'); }
+      } catch (e) { console.error('Rerun all failed:', e); setStep('results'); }
+      setGenerating(false);
+      return;
+    }
+
     const allRefs = referencePhotos.length > 0 ? referencePhotos : scrapedRefsRef.current;
     if (allRefs.length === 0) return;
     setGenerating(true);
@@ -211,7 +301,9 @@ export default function MockUpPage() {
     link.click();
   };
 
-  const canGenerate = artistPhotos.length > 0 && (referencePhotos.length > 0 || pinterestUrl.trim());
+  const canGenerate = mode === 'batch'
+    ? batchPhotos.length > 0 && (batchPrompt.trim() || referencePhotos.length > 0)
+    : artistPhotos.length > 0 && (referencePhotos.length > 0 || pinterestUrl.trim());
 
   // ── GENERATING ──
   if (step === 'generating') {
@@ -302,6 +394,12 @@ export default function MockUpPage() {
             100% { background-position: 0% 50%; }
           }
           .chrome-btn:hover { box-shadow: 0 0 30px rgba(255,255,255,0.15), 0 0 60px rgba(255,255,255,0.05) !important; }
+          @media (max-width: 768px) {
+            .mf { padding: 40px 20px 100px !important; }
+            .mode-toggle { bottom: 24px !important; }
+            .mode-toggle button { padding: 10px 20px !important; font-size: 0.65rem !important; }
+            .hero-title { font-size: clamp(3.5rem, 20vw, 8rem) !important; }
+          }
         `}</style>
 
         {/* Video background */}
@@ -314,11 +412,11 @@ export default function MockUpPage() {
         {/* ── HERO: Title + Mode Toggle (above fold) ── */}
         <div style={{
           position: 'relative', zIndex: 1,
-          height: '100vh',
+          height: '70vh',
           display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
         }}>
-          <h1 style={{
+          <h1 className="hero-title" style={{
             fontFamily: 'var(--font-unbounded)',
             fontSize: 'clamp(5rem, 18vw, 14rem)',
             fontWeight: 900, textTransform: 'uppercase',
@@ -328,18 +426,18 @@ export default function MockUpPage() {
             opacity: 0, mixBlendMode: 'difference',
             cursor: 'default', userSelect: 'none',
           }}>
-            MOXX<br/>UP
+            MOXXING
           </h1>
 
           {/* Mode toggle at bottom of hero */}
-          <div style={{
+          <div className="mode-toggle" style={{
             position: 'absolute', bottom: '48px',
             display: 'flex', gap: '4px',
             background: 'rgba(255,255,255,0.07)', backdropFilter: 'blur(40px)', WebkitBackdropFilter: 'blur(40px)',
             border: '1px solid rgba(255,255,255,0.12)', borderRadius: '8px', padding: '4px',
             animation: 'fadeIn 1s ease-out 1.2s forwards', opacity: 0,
           }}>
-            {(['scene', 'wardrobe'] as const).map(m => (
+            {(['scene', 'wardrobe', 'batch'] as const).map(m => (
               <button key={m} onClick={() => setMode(m)} style={{
                 padding: '14px 36px', fontSize: '0.75rem', fontWeight: 800,
                 fontFamily: 'var(--font-unbounded)', textTransform: 'uppercase', letterSpacing: '0.15em',
@@ -369,74 +467,151 @@ export default function MockUpPage() {
               />
             </div>
 
-            {/* Subject Photos */}
-            <div style={{ marginBottom: '48px' }}>
-              <label style={labelStyle}>Subject</label>
-              <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '14px', lineHeight: 1.5 }}>
-                Upload photos — multiple angles help with consistency
-              </p>
-              <div
-                onClick={(e) => { if ((e.target as HTMLElement).closest('.thumb-del')) return; document.getElementById('artist-upload')?.click(); }}
-                style={uploadBox(artistPhotos.length > 0)}
-              >
-                <input id="artist-upload" type="file" accept="image/*,.heic,.heif" multiple onChange={handleArtistUpload} style={{ display: 'none' }} />
-                {artistPhotos.length === 0
-                  ? <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>Click to upload photos</span>
-                  : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                      {artistThumbs.map((url, i) => (
-                        <div key={i} style={{ position: 'relative', width: '72px', height: '90px' }}>
-                          {url
-                            ? <img src={url} style={{ width: '72px', height: '90px', objectFit: 'cover', borderRadius: '4px' }} />
-                            : <div style={{ width: '72px', height: '90px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 600, color: 'rgba(255,255,255,0.25)' }}>HEIC</div>
-                          }
-                          <button className="thumb-del" onClick={(e) => { e.stopPropagation(); setArtistPhotos(prev => prev.filter((_, j) => j !== i)); }} style={thumbDelStyle}>×</button>
-                        </div>
-                      ))}
-                      <div style={{ width: '72px', height: '90px', border: '2px dashed rgba(255,255,255,0.3)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', color: 'rgba(255,255,255,0.3)', fontWeight: 300 }}>+</div>
-                    </div>
-                }
-              </div>
-            </div>
+            {mode === 'batch' ? (<>
+              {/* ── BATCH MODE FIELDS ── */}
 
-            {/* References */}
-            <div style={{ marginBottom: '48px' }}>
-              <label style={labelStyle}>{mode === 'scene' ? 'References' : 'Wardrobe'}</label>
-              <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '14px', lineHeight: 1.5 }}>
-                {mode === 'scene' ? 'Scenes, settings, and environments' : 'Outfits, looks, and styling references'}
-              </p>
-              <div
-                onClick={(e) => { if ((e.target as HTMLElement).closest('.thumb-del')) return; document.getElementById('ref-upload')?.click(); }}
-                style={uploadBox(referencePhotos.length > 0)}
-              >
-                <input id="ref-upload" type="file" accept="image/*,.heic,.heif" multiple onChange={handleRefUpload} style={{ display: 'none' }} />
-                {referencePhotos.length === 0
-                  ? <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>Click to upload references</span>
-                  : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                      {refThumbs.map((url, i) => (
-                        <div key={i} style={{ position: 'relative', width: '72px', height: '90px' }}>
-                          {url
-                            ? <img src={url} style={{ width: '72px', height: '90px', objectFit: 'cover', borderRadius: '4px' }} />
-                            : <div style={{ width: '72px', height: '90px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 600, color: 'rgba(255,255,255,0.25)' }}>HEIC</div>
-                          }
-                          <button className="thumb-del" onClick={(e) => { e.stopPropagation(); setReferencePhotos(prev => prev.filter((_, j) => j !== i)); }} style={thumbDelStyle}>×</button>
-                        </div>
-                      ))}
-                      <div style={{ width: '72px', height: '90px', border: '2px dashed rgba(255,255,255,0.3)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', color: 'rgba(255,255,255,0.3)', fontWeight: 300 }}>+</div>
-                    </div>
-                }
+              {/* Batch Photos (up to 50) */}
+              <div style={{ marginBottom: '48px' }}>
+                <label style={labelStyle}>Photos <span style={{ fontWeight: 400, fontSize: '0.65rem', color: 'rgba(255,255,255,0.35)' }}>({batchPhotos.length}/50)</span></label>
+                <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '14px', lineHeight: 1.5 }}>
+                  Upload up to 50 photos — the same effect will be applied to each
+                </p>
+                <div
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('.thumb-del')) return; document.getElementById('batch-upload')?.click(); }}
+                  style={uploadBox(batchPhotos.length > 0)}
+                >
+                  <input id="batch-upload" type="file" accept="image/*,.heic,.heif" multiple onChange={handleBatchUpload} style={{ display: 'none' }} />
+                  {batchPhotos.length === 0
+                    ? <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>Click to upload photos</span>
+                    : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {batchThumbs.map((url, i) => (
+                          <div key={i} style={{ position: 'relative', width: '72px', height: '90px' }}>
+                            {url
+                              ? <img src={url} style={{ width: '72px', height: '90px', objectFit: 'cover', borderRadius: '4px' }} />
+                              : <div style={{ width: '72px', height: '90px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 600, color: 'rgba(255,255,255,0.25)' }}>HEIC</div>
+                            }
+                            <button className="thumb-del" onClick={(e) => { e.stopPropagation(); setBatchPhotos(prev => prev.filter((_, j) => j !== i)); }} style={thumbDelStyle}>×</button>
+                          </div>
+                        ))}
+                        {batchPhotos.length < 50 && (
+                          <div style={{ width: '72px', height: '90px', border: '2px dashed rgba(255,255,255,0.3)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', color: 'rgba(255,255,255,0.3)', fontWeight: 300 }}>+</div>
+                        )}
+                      </div>
+                  }
+                </div>
               </div>
-            </div>
 
-            {/* Pinterest */}
-            <div style={{ marginBottom: '64px' }}>
-              <label style={labelStyle}>Pinterest</label>
-              <input
-                placeholder="Paste a board URL"
-                value={pinterestUrl}
-                onChange={(e) => setPinterestUrl(e.target.value)}
-                style={inputCss}
-              />
-            </div>
+              {/* Reference (optional) */}
+              <div style={{ marginBottom: '48px' }}>
+                <label style={labelStyle}>Reference <span style={{ fontWeight: 400, fontSize: '0.65rem', color: 'rgba(255,255,255,0.35)' }}>(optional)</span></label>
+                <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '14px', lineHeight: 1.5 }}>
+                  Style reference — the look to apply across all photos
+                </p>
+                <div
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('.thumb-del')) return; document.getElementById('ref-upload')?.click(); }}
+                  style={uploadBox(referencePhotos.length > 0)}
+                >
+                  <input id="ref-upload" type="file" accept="image/*,.heic,.heif" multiple onChange={handleRefUpload} style={{ display: 'none' }} />
+                  {referencePhotos.length === 0
+                    ? <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>Click to upload reference</span>
+                    : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {refThumbs.map((url, i) => (
+                          <div key={i} style={{ position: 'relative', width: '72px', height: '90px' }}>
+                            {url
+                              ? <img src={url} style={{ width: '72px', height: '90px', objectFit: 'cover', borderRadius: '4px' }} />
+                              : <div style={{ width: '72px', height: '90px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 600, color: 'rgba(255,255,255,0.25)' }}>HEIC</div>
+                            }
+                            <button className="thumb-del" onClick={(e) => { e.stopPropagation(); setReferencePhotos(prev => prev.filter((_, j) => j !== i)); }} style={thumbDelStyle}>×</button>
+                          </div>
+                        ))}
+                        <div style={{ width: '72px', height: '90px', border: '2px dashed rgba(255,255,255,0.3)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', color: 'rgba(255,255,255,0.3)', fontWeight: 300 }}>+</div>
+                      </div>
+                  }
+                </div>
+              </div>
+
+              {/* Prompt */}
+              <div style={{ marginBottom: '64px' }}>
+                <label style={labelStyle}>Prompt</label>
+                <input
+                  placeholder="Describe the effect to apply"
+                  value={batchPrompt}
+                  onChange={(e) => setBatchPrompt(e.target.value)}
+                  style={inputCss}
+                />
+              </div>
+            </>) : (<>
+              {/* ── SCENE / WARDROBE MODE FIELDS ── */}
+
+              {/* Subject Photos */}
+              <div style={{ marginBottom: '48px' }}>
+                <label style={labelStyle}>Subject</label>
+                <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '14px', lineHeight: 1.5 }}>
+                  Upload photos — adding multiple angles helps with consistency
+                </p>
+                <div
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('.thumb-del')) return; document.getElementById('artist-upload')?.click(); }}
+                  style={uploadBox(artistPhotos.length > 0)}
+                >
+                  <input id="artist-upload" type="file" accept="image/*,.heic,.heif" multiple onChange={handleArtistUpload} style={{ display: 'none' }} />
+                  {artistPhotos.length === 0
+                    ? <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>Click to upload photos</span>
+                    : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {artistThumbs.map((url, i) => (
+                          <div key={i} style={{ position: 'relative', width: '72px', height: '90px' }}>
+                            {url
+                              ? <img src={url} style={{ width: '72px', height: '90px', objectFit: 'cover', borderRadius: '4px' }} />
+                              : <div style={{ width: '72px', height: '90px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 600, color: 'rgba(255,255,255,0.25)' }}>HEIC</div>
+                            }
+                            <button className="thumb-del" onClick={(e) => { e.stopPropagation(); setArtistPhotos(prev => prev.filter((_, j) => j !== i)); }} style={thumbDelStyle}>×</button>
+                          </div>
+                        ))}
+                        <div style={{ width: '72px', height: '90px', border: '2px dashed rgba(255,255,255,0.3)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', color: 'rgba(255,255,255,0.3)', fontWeight: 300 }}>+</div>
+                      </div>
+                  }
+                </div>
+              </div>
+
+              {/* References */}
+              <div style={{ marginBottom: '48px' }}>
+                <label style={labelStyle}>{mode === 'scene' ? 'References' : 'Wardrobe'}</label>
+                <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '14px', lineHeight: 1.5 }}>
+                  {mode === 'scene' ? 'Scenes, settings, and environments' : 'Outfits, looks, and styling references'}
+                </p>
+                <div
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('.thumb-del')) return; document.getElementById('ref-upload')?.click(); }}
+                  style={uploadBox(referencePhotos.length > 0)}
+                >
+                  <input id="ref-upload" type="file" accept="image/*,.heic,.heif" multiple onChange={handleRefUpload} style={{ display: 'none' }} />
+                  {referencePhotos.length === 0
+                    ? <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>Click to upload references</span>
+                    : <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {refThumbs.map((url, i) => (
+                          <div key={i} style={{ position: 'relative', width: '72px', height: '90px' }}>
+                            {url
+                              ? <img src={url} style={{ width: '72px', height: '90px', objectFit: 'cover', borderRadius: '4px' }} />
+                              : <div style={{ width: '72px', height: '90px', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.5rem', fontWeight: 600, color: 'rgba(255,255,255,0.25)' }}>HEIC</div>
+                            }
+                            <button className="thumb-del" onClick={(e) => { e.stopPropagation(); setReferencePhotos(prev => prev.filter((_, j) => j !== i)); }} style={thumbDelStyle}>×</button>
+                          </div>
+                        ))}
+                        <div style={{ width: '72px', height: '90px', border: '2px dashed rgba(255,255,255,0.3)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem', color: 'rgba(255,255,255,0.3)', fontWeight: 300 }}>+</div>
+                      </div>
+                  }
+                </div>
+              </div>
+
+              {/* Pinterest */}
+              <div style={{ marginBottom: '64px' }}>
+                <label style={labelStyle}>Pinterest</label>
+                <input
+                  placeholder="Paste a board URL"
+                  value={pinterestUrl}
+                  onChange={(e) => setPinterestUrl(e.target.value)}
+                  style={inputCss}
+                />
+              </div>
+            </>)}
 
             {/* Generate */}
             <button
@@ -464,19 +639,23 @@ export default function MockUpPage() {
   // ── DECK PREVIEW ──
   if (step === 'deck') {
     return (
-      <div style={{ minHeight: 'calc(100vh - 61px)', background: '#f5f5f5', color: '#000', padding: '24px' }}>
+      <div style={{ minHeight: '100vh', background: '#000', color: '#fff', padding: '24px', position: 'relative' }}>
+        <video autoPlay loop muted playsInline src="/0227.mov" style={{
+          position: 'fixed', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
+          zIndex: 0, opacity: 0.15,
+        }} />
         {/* Top bar */}
         <div style={{
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          marginBottom: '24px', position: 'sticky', top: '61px', zIndex: 50,
-          background: 'rgba(245,245,245,0.95)', backdropFilter: 'blur(12px)',
+          marginBottom: '24px', position: 'sticky', top: 0, zIndex: 50,
+          background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(12px)',
           padding: '12px 0',
         }}>
           <button onClick={() => setStep('results')} style={{
             padding: '10px 16px', fontSize: '0.65rem', fontWeight: 700,
             fontFamily: 'var(--font-unbounded)', textTransform: 'uppercase', letterSpacing: '0.1em',
-            background: 'none', color: '#000', border: '1px solid rgba(0,0,0,0.12)',
-            borderRadius: '3px', cursor: 'pointer',
+            background: 'none', color: 'rgba(255,255,255,0.5)',
+            border: '1px solid rgba(255,255,255,0.15)', borderRadius: '3px', cursor: 'pointer',
           }}>
             ← Back
           </button>
@@ -488,7 +667,7 @@ export default function MockUpPage() {
             }} style={{
               padding: '10px 20px', fontSize: '0.65rem', fontWeight: 700,
               fontFamily: 'var(--font-unbounded)', textTransform: 'uppercase', letterSpacing: '0.1em',
-              background: '#000', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer',
+              background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer',
             }}>
               PDF
             </button>
@@ -499,18 +678,18 @@ export default function MockUpPage() {
             }} style={{
               padding: '10px 20px', fontSize: '0.65rem', fontWeight: 700,
               fontFamily: 'var(--font-unbounded)', textTransform: 'uppercase', letterSpacing: '0.1em',
-              background: '#000', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer',
+              background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer',
             }}>
               PPTX
             </button>
           </div>
         </div>
         {/* Slides */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', position: 'relative', zIndex: 1 }}>
           {deckSlides.map((slideImg, i) => (
             <div key={i} style={{
               width: '100%', maxWidth: '1100px',
-              boxShadow: '0 1px 8px rgba(0,0,0,0.08)', overflow: 'hidden',
+              boxShadow: '0 2px 16px rgba(0,0,0,0.3)', overflow: 'hidden',
             }}>
               <img src={`data:image/jpeg;base64,${slideImg}`} style={{ width: '100%', display: 'block' }} />
             </div>
@@ -522,14 +701,27 @@ export default function MockUpPage() {
 
   // ── RESULTS ──
   return (
-    <div style={{ background: '#000', minHeight: 'calc(100vh - 61px)' }}>
+    <div style={{ background: '#000', minHeight: '100vh', position: 'relative' }}>
       <style>{`
         @keyframes mockup-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .results-grid { display: grid; gap: 1px; }
+        @media (max-width: 768px) {
+          .results-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .results-bar { flex-wrap: wrap; gap: 8px !important; }
+          .results-bar > div:last-child { width: 100%; display: flex; justify-content: center; flex-wrap: wrap; }
+        }
+        @media (min-width: 769px) and (max-width: 1024px) {
+          .results-grid { grid-template-columns: repeat(3, 1fr) !important; }
+        }
       `}</style>
+      <video autoPlay loop muted playsInline src="/0227.mov" style={{
+        position: 'fixed', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
+        zIndex: 0, opacity: 0.15,
+      }} />
 
       {/* Floating top bar */}
-      <div style={{
-        position: 'sticky', top: '61px', zIndex: 50,
+      <div className="results-bar" style={{
+        position: 'sticky', top: 0, zIndex: 50,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         padding: '12px 16px',
         background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(16px)',
@@ -561,7 +753,7 @@ export default function MockUpPage() {
               {label}
             </button>
           ))}
-          <button onClick={() => { setStep('upload'); setMockups([]); }} style={{
+          <button onClick={() => { setStep('upload'); setMockups([]); setProjectName(''); setArtistPhotos([]); setReferencePhotos([]); setPinterestUrl(''); setBatchPhotos([]); setBatchPrompt(''); scrapedRefsRef.current = []; }} style={{
             padding: '8px 14px', fontSize: '0.6rem', fontWeight: 700,
             fontFamily: 'var(--font-unbounded)', textTransform: 'uppercase', letterSpacing: '0.1em',
             background: 'none', color: 'rgba(255,255,255,0.35)',
@@ -577,10 +769,9 @@ export default function MockUpPage() {
       </div>
 
       {/* Grid */}
-      <div style={{
-        display: 'grid',
+      <div className="results-grid" style={{
+        position: 'relative', zIndex: 1,
         gridTemplateColumns: `repeat(${Math.min(5, mockups.length)}, 1fr)`,
-        gap: '1px',
         background: '#000',
       }}>
         {mockups.map((m, idx) => (
@@ -589,6 +780,7 @@ export default function MockUpPage() {
             style={{ position: 'relative', aspectRatio: '3/4', overflow: 'hidden', cursor: 'pointer' }}
             onMouseEnter={() => setHoveredId(m.id)}
             onMouseLeave={() => setHoveredId(null)}
+            onClick={() => setHoveredId(prev => prev === m.id ? null : m.id)}
           >
             <img
               src={`data:image/png;base64,${m.base64}`}

@@ -33,7 +33,7 @@ export function NavBar() {
           WebkitTextFillColor: 'transparent',
           animation: 'navChrome 8s ease-in-out infinite',
         }}>
-          MOXX UP
+          MOXXING
         </a>
       </nav>
     </>

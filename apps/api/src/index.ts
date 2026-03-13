@@ -2085,6 +2085,193 @@ app.get('/api/mockup/deck/:id/pptx', async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════
+// BATCH MODE — apply same prompt/effect to up to 50 photos
+// ══════════════════════════════════════════════════════════════
+
+const batchUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024, files: 60 } });
+const batchFields = batchUpload.fields([
+  { name: 'photos', maxCount: 50 },
+  { name: 'reference_photos', maxCount: 10 },
+]);
+
+async function generateOneBatchImage(
+  photo: { base64: string; mimeType: string },
+  prompt: string,
+  referenceImages: { base64: string; mimeType: string }[],
+): Promise<{ id: string; base64: string } | null> {
+  const { GoogleGenAI } = require('@google/genai');
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const sharpLib = require('sharp');
+
+  const contentParts: any[] = [];
+
+  // The source photo to transform
+  contentParts.push({ text: 'SOURCE PHOTO — apply the effect/transformation to this image:' });
+  try {
+    const buf = Buffer.from(photo.base64, 'base64');
+    const small = await sharpLib(buf).resize(1536, 1536, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer();
+    contentParts.push({ inlineData: { data: small.toString('base64'), mimeType: 'image/jpeg' } });
+  } catch {
+    contentParts.push({ inlineData: { data: photo.base64, mimeType: photo.mimeType } });
+  }
+
+  // Optional reference images
+  if (referenceImages.length > 0) {
+    contentParts.push({ text: 'REFERENCE IMAGE(S) — match this style/look/effect:' });
+    for (const ref of referenceImages) {
+      try {
+        const buf = Buffer.from(ref.base64, 'base64');
+        const small = await sharpLib(buf).resize(1024, 1024, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+        contentParts.push({ inlineData: { data: small.toString('base64'), mimeType: 'image/jpeg' } });
+      } catch {
+        contentParts.push({ inlineData: { data: ref.base64, mimeType: ref.mimeType } });
+      }
+    }
+  }
+
+  contentParts.push({ text: prompt });
+
+  const IMAGE_MODELS = ['gemini-3-pro-image-preview', 'nano-banana-pro-preview', 'gemini-2.5-flash-image'];
+
+  for (const model of IMAGE_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: 'user', parts: contentParts }],
+        config: { responseModalities: ['TEXT', 'IMAGE'] },
+      });
+
+      const candidates = response.candidates;
+      if (!candidates?.length) continue;
+
+      for (const part of candidates[0].content?.parts || []) {
+        if ((part as any).inlineData) {
+          return { id: uuid(), base64: (part as any).inlineData.data };
+        }
+      }
+    } catch (err: any) {
+      const msg = err.message || '';
+      if (msg.includes('429') || msg.includes('quota')) {
+        console.warn(`  ⚠ ${model} quota exceeded, trying next model...`);
+        continue;
+      }
+      console.error(`  ✗ ${model} failed:`, msg.slice(0, 200));
+      return null;
+    }
+  }
+  console.error(`  ✗ All image models exhausted`);
+  return null;
+}
+
+app.post('/api/mockup/batch', batchFields, async (req: any, res) => {
+  try {
+    const photoFiles = req.files?.['photos'] || [];
+    const refFiles = req.files?.['reference_photos'] || [];
+    const prompt = req.body?.prompt || '';
+
+    if (photoFiles.length === 0) return res.status(400).json({ error: 'No photos uploaded' });
+    if (!prompt.trim() && refFiles.length === 0) return res.status(400).json({ error: 'Need a prompt or reference image' });
+
+    const sessionId = req.body?.session_id || uuid();
+    console.log(`\n🔄 Batch session ${sessionId}: ${photoFiles.length} photos, ${refFiles.length} refs, prompt: "${prompt.slice(0, 80)}"`);
+
+    // Normalize all photos
+    const photoResults = await Promise.allSettled(photoFiles.map(async (f: any) => {
+      const norm = await normalizeImage(f.buffer, f.mimetype);
+      return { base64: norm.buffer.toString('base64'), mimeType: norm.mimeType };
+    }));
+    const photos = photoResults.filter((r): r is PromiseFulfilledResult<{base64:string;mimeType:string}> => r.status === 'fulfilled').map(r => r.value);
+
+    // Normalize reference images
+    const refResults = await Promise.allSettled(refFiles.map(async (f: any) => {
+      const norm = await normalizeImage(f.buffer, f.mimetype);
+      return { base64: norm.buffer.toString('base64'), mimeType: norm.mimeType };
+    }));
+    const refs = refResults.filter((r): r is PromiseFulfilledResult<{base64:string;mimeType:string}> => r.status === 'fulfilled').map(r => r.value);
+
+    if (photos.length === 0) return res.status(400).json({ error: 'All photos failed to process' });
+
+    // Build the prompt
+    let fullPrompt = prompt.trim();
+    if (!fullPrompt && refs.length > 0) {
+      fullPrompt = 'Apply the style and look from the reference image(s) to this photo. Keep the subject and composition but transform the aesthetic to match the reference.';
+    }
+
+    // Track progress
+    mockupProgress.set(sessionId, { done: 0, total: photos.length, phase: 'generating' });
+
+    // Generate — 2 concurrent
+    const results: { id: string; base64: string; photoIndex: number }[] = [];
+    const concurrency = 2;
+
+    for (let i = 0; i < photos.length; i += concurrency) {
+      const batch = photos.slice(i, i + concurrency);
+      const promises = batch.map((photo, j) => {
+        const idx = i + j;
+        console.log(`  [${idx + 1}/${photos.length}] Processing...`);
+        return generateOneBatchImage(photo, fullPrompt, refs).then(result => {
+          const prog = mockupProgress.get(sessionId);
+          if (prog) { prog.done++; mockupProgress.set(sessionId, prog); }
+          if (result) {
+            results.push({ ...result, photoIndex: idx });
+            console.log(`  ✓ Photo ${idx + 1}`);
+          } else {
+            console.log(`  ✗ Photo ${idx + 1} failed`);
+          }
+        });
+      });
+      await Promise.all(promises);
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    console.log(`  🔄 Batch complete: ${results.length}/${photos.length}`);
+
+    res.json({
+      sessionId,
+      images: results.sort((a, b) => a.photoIndex - b.photoIndex),
+      total: photos.length,
+      generated: results.length,
+    });
+  } catch (e: any) {
+    console.error('Batch generation failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/mockup/batch/rerun-single — regenerate one batch image
+app.post('/api/mockup/batch/rerun-single', batchFields, async (req: any, res) => {
+  try {
+    const photoFiles = req.files?.['photos'] || [];
+    const refFiles = req.files?.['reference_photos'] || [];
+    const prompt = req.body?.prompt || '';
+
+    if (photoFiles.length === 0) return res.status(400).json({ error: 'No photo' });
+
+    const norm = await normalizeImage(photoFiles[0].buffer, photoFiles[0].mimetype);
+    const photo = { base64: norm.buffer.toString('base64'), mimeType: norm.mimeType };
+
+    const refs = await Promise.all((refFiles || []).map(async (f: any) => {
+      const n = await normalizeImage(f.buffer, f.mimetype);
+      return { base64: n.buffer.toString('base64'), mimeType: n.mimeType };
+    }));
+
+    let fullPrompt = prompt.trim();
+    if (!fullPrompt && refs.length > 0) {
+      fullPrompt = 'Apply the style and look from the reference image(s) to this photo. Keep the subject and composition but transform the aesthetic to match the reference.';
+    }
+
+    const result = await generateOneBatchImage(photo, fullPrompt, refs);
+    if (result) {
+      res.json({ image: result });
+    } else {
+      res.status(500).json({ error: 'Generation failed' });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(Number(PORT), '127.0.0.1', () => {
   console.log(`Cultural Graph API running on 127.0.0.1:${PORT}`);
 });
