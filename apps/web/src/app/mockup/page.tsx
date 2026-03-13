@@ -35,6 +35,7 @@ export default function MockUpPage() {
   const [batchPrompt, setBatchPrompt] = useState('');
   const [generatingVideoIds, setGeneratingVideoIds] = useState<Set<string>>(new Set());
   const [videoResults, setVideoResults] = useState<Map<string, string>>(new Map()); // id -> base64
+  const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioStartTime, setAudioStartTime] = useState(0); // seconds
   const [audioDuration, setAudioDuration] = useState(0); // total duration in seconds
@@ -968,23 +969,40 @@ export default function MockUpPage() {
             onClick={() => setHoveredId(prev => prev === m.id ? null : m.id)}
           >
             {/* Video playback layer */}
-            {videoResults.has(m.id) && hoveredId === m.id ? (
+            {playingVideoId === m.id && videoResults.has(m.id) && (
               <video
-                autoPlay loop muted playsInline
+                autoPlay loop playsInline
                 src={`data:video/mp4;base64,${videoResults.get(m.id)}`}
                 style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute', inset: 0, zIndex: 1 }}
+                onClick={(e) => { e.stopPropagation(); setPlayingVideoId(null); }}
               />
-            ) : (
-              <img
-                src={`data:image/png;base64,${m.base64}`}
-                alt=""
+            )}
+            <img
+              src={`data:image/png;base64,${m.base64}`}
+              alt=""
+              style={{
+                width: '100%', height: '100%', objectFit: 'cover',
+                opacity: (rerunningIds.has(m.id) || generatingVideoIds.has(m.id)) ? 0.2 : playingVideoId === m.id ? 0 : 1,
+                transition: 'all 0.3s',
+                transform: hoveredId === m.id ? 'scale(1.03)' : 'scale(1)',
+              }}
+            />
+            {/* Play button — shows when video is ready but not playing */}
+            {videoResults.has(m.id) && playingVideoId !== m.id && !generatingVideoIds.has(m.id) && !rerunningIds.has(m.id) && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setPlayingVideoId(m.id); }}
                 style={{
-                  width: '100%', height: '100%', objectFit: 'cover',
-                  opacity: (rerunningIds.has(m.id) || generatingVideoIds.has(m.id)) ? 0.2 : 1,
-                  transition: 'all 0.3s',
-                  transform: hoveredId === m.id ? 'scale(1.03)' : 'scale(1)',
+                  position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                  zIndex: 2, background: 'rgba(0,0,0,0.5)', border: '2px solid rgba(255,255,255,0.6)',
+                  borderRadius: '50%', width: '48px', height: '48px', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  backdropFilter: 'blur(8px)', transition: 'all 0.2s',
                 }}
-              />
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="rgba(255,255,255,0.9)" stroke="none">
+                  <polygon points="6 3 20 12 6 21 6 3" />
+                </svg>
+              </button>
             )}
             {/* Loading spinner for rerun or video gen */}
             {(rerunningIds.has(m.id) || generatingVideoIds.has(m.id)) && (
