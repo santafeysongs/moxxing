@@ -451,7 +451,7 @@ export default function MockUpPage() {
     };
 
     return (
-      <div style={{ minHeight: '100vh', background: '#000', position: 'relative' }}>
+      <div style={{ minHeight: '100vh', background: '#000', position: 'relative', isolation: 'isolate' }}>
         <style>{`
           @keyframes blurReveal {
             from { filter: blur(24px); opacity: 0; transform: scale(1.05); }
@@ -506,7 +506,7 @@ export default function MockUpPage() {
             textAlign: 'center', color: '#fff',
             animation: 'blurReveal 1.5s ease-out forwards, pulseGlow 4s ease-in-out 1.5s infinite',
             opacity: 0, mixBlendMode: 'difference',
-            cursor: 'default', userSelect: 'none',
+            cursor: 'default', userSelect: 'none', pointerEvents: 'none',
           }}>
             MOXXING
           </h1>
@@ -533,7 +533,7 @@ export default function MockUpPage() {
 
         {/* ── FORM (below fold, scrollable) ── */}
         <div className="mf" style={{
-          position: 'relative', zIndex: 1,
+          position: 'relative', zIndex: 2,
           padding: '80px 48px 160px',
         }}>
           <div style={{ width: '100%', maxWidth: '900px', margin: '0 auto' }}>
