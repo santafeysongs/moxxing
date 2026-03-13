@@ -462,9 +462,9 @@ export default function MockUpPage() {
             50% { text-shadow: 0 0 120px rgba(255,255,255,0.15); }
           }
           @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-          .mf input { background: transparent !important; color: #fff !important; border: none !important; border-radius: 0 !important; padding: 0 0 12px !important; border-bottom: 2px solid rgba(255,255,255,0.4) !important; }
-          .mf input::placeholder { color: rgba(255,255,255,0.35) !important; }
-          .mf input:focus { box-shadow: none !important; border-color: rgba(255,255,255,0.6) !important; }
+          .mf input[type="text"], .mf input:not([type]) { background: transparent !important; color: #fff !important; border: none !important; border-radius: 0 !important; padding: 0 0 12px !important; border-bottom: 2px solid rgba(255,255,255,0.4) !important; }
+          .mf input[type="text"]::placeholder, .mf input:not([type])::placeholder { color: rgba(255,255,255,0.35) !important; }
+          .mf input[type="text"]:focus, .mf input:not([type]):focus { box-shadow: none !important; border-color: rgba(255,255,255,0.6) !important; }
           .chrome-btn {
             background: linear-gradient(135deg, #e8e8e8 0%, #b8b8b8 25%, #e0e0e0 50%, #a0a0a0 75%, #d0d0d0 100%) !important;
             background-size: 200% 200% !important;
