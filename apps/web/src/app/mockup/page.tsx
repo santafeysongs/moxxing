@@ -35,6 +35,7 @@ export default function MockUpPage() {
   const [batchPrompt, setBatchPrompt] = useState('');
   const [generatingVideoIds, setGeneratingVideoIds] = useState<Set<string>>(new Set());
   const [videoResults, setVideoResults] = useState<Map<string, string>>(new Map()); // id -> base64
+  const [audioFile, setAudioFile] = useState<File | null>(null);
 
   const scrapedRefsRef = useRef<File[]>([]);
 
@@ -292,11 +293,13 @@ export default function MockUpPage() {
     if (!mockup) return;
     setGeneratingVideoIds(prev => new Set(prev).add(mockupId));
     try {
-      const res = await fetch(`${API}/api/mockup/video`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64: mockup.base64 }),
-      });
+      const formData = new FormData();
+      // Convert base64 image to blob for FormData
+      const imgBlob = await fetch(`data:image/png;base64,${mockup.base64}`).then(r => r.blob());
+      formData.append('image', imgBlob, 'image.png');
+      if (audioFile) formData.append('audio', audioFile);
+
+      const res = await fetch(`${API}/api/mockup/video`, { method: 'POST', body: formData });
       const data = await res.json();
       if (data.base64) {
         setVideoResults(prev => new Map(prev).set(mockupId, data.base64));
@@ -494,6 +497,43 @@ export default function MockUpPage() {
                 onChange={(e) => setProjectName(e.target.value)}
                 style={inputCss}
               />
+            </div>
+
+            {/* Audio (all modes) */}
+            <div style={{ marginBottom: '48px' }}>
+              <label style={labelStyle}>Audio <span style={{ fontWeight: 400, fontSize: '0.65rem', color: 'rgba(255,255,255,0.35)' }}>(optional)</span></label>
+              <p style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)', marginBottom: '14px', lineHeight: 1.5 }}>
+                Upload a song — first 8 seconds will be added to generated videos
+              </p>
+              {audioFile ? (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: '12px',
+                  background: 'rgba(255,255,255,0.06)', borderRadius: '8px', padding: '14px 16px',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+                  </svg>
+                  <span style={{ flex: 1, fontSize: '0.85rem', color: 'rgba(255,255,255,0.7)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{audioFile.name}</span>
+                  <button onClick={() => setAudioFile(null)} style={{
+                    background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '50%',
+                    width: '20px', height: '20px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '10px', fontWeight: 700, color: '#fff',
+                  }}>×</button>
+                </div>
+              ) : (
+                <div
+                  onClick={() => document.getElementById('audio-upload')?.click()}
+                  style={{
+                    background: 'rgba(255,255,255,0.06)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+                    border: '2px dashed rgba(255,255,255,0.4)', borderRadius: '8px', padding: '28px',
+                    textAlign: 'center', cursor: 'pointer', transition: 'all 0.3s',
+                  }}
+                >
+                  <span style={{ fontSize: '0.9rem', color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>Click to upload audio</span>
+                </div>
+              )}
+              <input id="audio-upload" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" onChange={(e) => { if (e.target.files?.[0]) setAudioFile(e.target.files[0]); }} style={{ display: 'none' }} />
             </div>
 
             {mode === 'batch' ? (<>
@@ -782,7 +822,7 @@ export default function MockUpPage() {
               {label}
             </button>
           ))}
-          <button onClick={() => { setStep('upload'); setMockups([]); setProjectName(''); setArtistPhotos([]); setReferencePhotos([]); setPinterestUrl(''); setBatchPhotos([]); setBatchPrompt(''); scrapedRefsRef.current = []; }} style={{
+          <button onClick={() => { setStep('upload'); setMockups([]); setProjectName(''); setArtistPhotos([]); setReferencePhotos([]); setPinterestUrl(''); setBatchPhotos([]); setBatchPrompt(''); setAudioFile(null); setVideoResults(new Map()); scrapedRefsRef.current = []; }} style={{
             padding: '8px 14px', fontSize: '0.6rem', fontWeight: 700,
             fontFamily: 'var(--font-unbounded)', textTransform: 'uppercase', letterSpacing: '0.1em',
             background: 'none', color: 'rgba(255,255,255,0.35)',

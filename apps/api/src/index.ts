@@ -2276,25 +2276,33 @@ app.post('/api/mockup/batch/rerun-single', batchFields, async (req: any, res) =>
 // VIDEO GENERATION — Veo 2.0 image-to-video via Google GenAI
 // ══════════════════════════════════════════════════════════════
 
-app.post('/api/mockup/video', express.json({ limit: '50mb' }), async (req, res) => {
-  try {
-    const { base64, prompt } = req.body;
-    if (!base64) return res.status(400).json({ error: 'No image provided' });
+const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const videoFields = videoUpload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'audio', maxCount: 1 },
+]);
 
-    console.log(`\n🎬 Video generation starting...`);
+app.post('/api/mockup/video', videoFields, async (req: any, res) => {
+  try {
+    const imageFile = req.files?.['image']?.[0];
+    const audioFile = req.files?.['audio']?.[0];
+
+    if (!imageFile) return res.status(400).json({ error: 'No image provided' });
+
+    const hasAudio = !!audioFile;
+    console.log(`\n🎬 Video generation starting...${hasAudio ? ' (with audio)' : ''}`);
 
     const { GoogleGenAI } = require('@google/genai');
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-    // Resize image for Veo (keep reasonable size)
+    // Resize image for Veo
     const sharpLib = require('sharp');
-    const buf = Buffer.from(base64, 'base64');
-    const resized = await sharpLib(buf)
+    const resized = await sharpLib(imageFile.buffer)
       .resize(1280, 720, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 90 })
       .toBuffer();
 
-    const videoPrompt = prompt || 'Subtle cinematic motion. Slow camera movement, atmospheric ambient motion, gentle parallax. Photorealistic, no morphing, no distortion.';
+    const videoPrompt = (req.body?.prompt as string) || 'Subtle cinematic motion. Slow camera movement, atmospheric ambient motion, gentle parallax. Photorealistic, no morphing, no distortion.';
 
     // Start async video generation
     const op = await ai.models.generateVideos({
@@ -2333,21 +2341,52 @@ app.post('/api/mockup/video', express.json({ limit: '50mb' }), async (req, res) 
 
     console.log(`  ✓ Video ready: ${video.uri}`);
 
-    // Download the video and return as base64
+    // Download the video
     const videoResponse = await fetch(video.uri);
     if (!videoResponse.ok) {
       return res.status(500).json({ error: 'Failed to download video' });
     }
-    const videoBuffer = Buffer.from(await videoResponse.arrayBuffer());
-    const videoBase64 = videoBuffer.toString('base64');
+    let videoBuffer = Buffer.from(await videoResponse.arrayBuffer());
 
-    console.log(`  ✓ Video downloaded: ${(videoBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+    // If audio provided, mux with FFmpeg
+    if (hasAudio) {
+      console.log(`  🎵 Muxing audio (${audioFile.originalname})...`);
+      const { execSync } = require('child_process');
+      const tmpDir = path.join(__dirname, '../../../data/tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const tmpId = uuid();
+      const videoPath = path.join(tmpDir, `${tmpId}-video.mp4`);
+      const audioPath = path.join(tmpDir, `${tmpId}-audio${path.extname(audioFile.originalname) || '.mp3'}`);
+      const outputPath = path.join(tmpDir, `${tmpId}-final.mp4`);
+
+      fs.writeFileSync(videoPath, videoBuffer);
+      fs.writeFileSync(audioPath, audioFile.buffer);
+
+      try {
+        // Take first 8 seconds of audio, mux onto video, fade out last 1 second
+        execSync(
+          `ffmpeg -y -i "${videoPath}" -i "${audioPath}" -t 8 -filter_complex "[1:a]atrim=0:8,afade=t=out:st=7:d=1[a]" -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest "${outputPath}"`,
+          { timeout: 30000 }
+        );
+        videoBuffer = fs.readFileSync(outputPath);
+        console.log(`  ✓ Audio muxed: ${(videoBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+      } catch (ffmpegErr: any) {
+        console.warn(`  ⚠ FFmpeg mux failed (returning video without audio):`, ffmpegErr.message?.slice(0, 200));
+      } finally {
+        // Cleanup temp files
+        [videoPath, audioPath, outputPath].forEach(p => { try { fs.unlinkSync(p); } catch {} });
+      }
+    }
+
+    const videoBase64 = videoBuffer.toString('base64');
+    console.log(`  ✓ Video complete: ${(videoBuffer.length / 1024 / 1024).toFixed(1)}MB`);
 
     res.json({
       base64: videoBase64,
       mimeType: 'video/mp4',
       size: videoBuffer.length,
       durationSeconds: 8,
+      hasAudio,
     });
   } catch (e: any) {
     console.error('Video generation failed:', e.message);
