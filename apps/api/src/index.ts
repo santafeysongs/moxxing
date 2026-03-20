@@ -6,8 +6,54 @@ import fs from 'fs';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
 import rateLimit from 'express-rate-limit';
+import Stripe from 'stripe';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+
+// ── Stripe setup ──
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+const TIME_PASS_TIERS: Record<string, { label: string; price: number; minutes: number }> = {
+  '1h': { label: '1 Hour Pass', price: 500, minutes: 60 },
+  '4h': { label: '4 Hour Pass', price: 1500, minutes: 240 },
+  '8h': { label: '8 Hour Pass', price: 5000, minutes: 480 },
+};
+
+// In-memory session cache: sessionId → { paid, tier, expiresAt, cachedAt }
+const sessionCache = new Map<string, { paid: boolean; tier: string; expiresAt: Date; cachedAt: number }>();
+const SESSION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function validateStripeSession(sessionId: string): Promise<{ valid: boolean; tier: string; expiresAt: Date; remainingMinutes: number }> {
+  // Check cache first
+  const cached = sessionCache.get(sessionId);
+  if (cached && Date.now() - cached.cachedAt < SESSION_CACHE_TTL) {
+    const remaining = Math.max(0, Math.floor((cached.expiresAt.getTime() - Date.now()) / 60000));
+    return { valid: cached.paid && remaining > 0, tier: cached.tier, expiresAt: cached.expiresAt, remainingMinutes: remaining };
+  }
+
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (session.payment_status !== 'paid') {
+      return { valid: false, tier: '', expiresAt: new Date(), remainingMinutes: 0 };
+    }
+
+    const tier = (session.metadata?.tier || '1h') as string;
+    const tierConfig = TIME_PASS_TIERS[tier] || TIME_PASS_TIERS['1h'];
+    // Use payment completion time (session created + small buffer) or fall back to created timestamp
+    const paidAt = new Date((session.created || Math.floor(Date.now() / 1000)) * 1000);
+    const expiresAt = new Date(paidAt.getTime() + tierConfig.minutes * 60 * 1000);
+    const remainingMinutes = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 60000));
+
+    // Cache the result
+    sessionCache.set(sessionId, { paid: true, tier, expiresAt, cachedAt: Date.now() });
+
+    return { valid: remainingMinutes > 0, tier, expiresAt, remainingMinutes };
+  } catch (e: any) {
+    console.error('Stripe session validation failed:', e.message);
+    return { valid: false, tier: '', expiresAt: new Date(), remainingMinutes: 0 };
+  }
+}
 
 import { analyzeMoodBoard } from '@cultural-graph/analysis-engine/src/batch-analyzer';
 import { scrapePinterestBoard, cleanupPinterestFiles } from '@cultural-graph/analysis-engine/src/pinterest-scraper';
@@ -1525,41 +1571,11 @@ const mockupFields = mockupUpload.fields([
 
 // Describe artist once per session — detailed physical description for consistent face/body placement
 async function describeArtist(photos: ArtistPhoto[]): Promise<string> {
+  // Fixed prompt — no external API call needed.
+  // Gemini already sees the actual artist photos in every generation call,
+  // so the text description just anchors the prompt to "the person shown above."
   if (photos.length === 0) return 'the artist';
-  try {
-    const Anthropic = require('@anthropic-ai/sdk');
-    const anthropic = new Anthropic.default();
-    // Resize photos for Claude (full-res HEIC conversions can be 10MB+ each)
-    const sharpLib = require('sharp');
-    const resized = await Promise.all(photos.slice(0, 5).map(async (p: ArtistPhoto) => {
-      try {
-        const buf = Buffer.from(p.base64, 'base64');
-        const small = await sharpLib(buf).resize(800, 800, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
-        return { base64: small.toString('base64'), mimeType: 'image/jpeg' };
-      } catch { return p; }
-    }));
-    const imageContent = resized.map((p) => ({
-      type: 'image' as const,
-      source: { type: 'base64' as const, media_type: p.mimeType, data: p.base64 },
-    }));
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 100,
-      messages: [{
-        role: 'user',
-        content: [
-          ...imageContent,
-          { type: 'text', text: `Give me a short, uniquely identifying description of this person — something that makes it obvious which person you mean. Like "the person in the 77 shirt" or "the woman with the red headband" or "the guy in the yellow room." One simple phrase, 5-10 words max. Use the most visually obvious identifier.` },
-        ],
-      }],
-    });
-    const desc = response.content[0]?.text?.trim() || 'the artist';
-    console.log(`  Artist description: ${desc}`);
-    return desc;
-  } catch (e: any) {
-    console.warn(`  Could not describe artist: ${e.message}`);
-    return 'the artist';
-  }
+  return 'the person shown in the ARTIST PHOTOS above';
 }
 
 // Track mockup generation progress per session
@@ -1693,8 +1709,21 @@ const mockupRateLimit = rateLimit({
 
 app.use('/api/mockup', mockupRateLimit);
 
+// ── Payment session middleware ──
+async function requireActiveSession(req: any, res: any, next: any) {
+  const sessionId = req.headers['x-session-id'];
+  if (!sessionId) {
+    return res.status(402).json({ error: 'Payment required', needsPayment: true });
+  }
+  const result = await validateStripeSession(sessionId);
+  if (!result.valid) {
+    return res.status(402).json({ error: 'Payment required', needsPayment: true });
+  }
+  next();
+}
+
 // POST /api/mockup — generate 30 mockups
-app.post('/api/mockup', mockupFields, async (req: any, res) => {
+app.post('/api/mockup', mockupFields, requireActiveSession, async (req: any, res) => {
   try {
     const artistFiles = req.files?.['artist_photos'] || [];
     const refFiles = req.files?.['reference_photos'] || [];
@@ -1820,7 +1849,7 @@ app.post('/api/mockup', mockupFields, async (req: any, res) => {
 });
 
 // POST /api/mockup/rerun-single — regenerate one mockup
-app.post('/api/mockup/rerun-single', mockupFields, async (req: any, res) => {
+app.post('/api/mockup/rerun-single', mockupFields, requireActiveSession, async (req: any, res) => {
   try {
     const artistFiles = req.files?.['artist_photos'] || [];
     const refFile = req.files?.['reference_photo']?.[0];
@@ -2177,7 +2206,7 @@ async function generateOneBatchImage(
   return null;
 }
 
-app.post('/api/mockup/batch', batchFields, async (req: any, res) => {
+app.post('/api/mockup/batch', batchFields, requireActiveSession, async (req: any, res) => {
   try {
     const photoFiles = req.files?.['photos'] || [];
     const refFiles = req.files?.['reference_photos'] || [];
@@ -2253,7 +2282,7 @@ app.post('/api/mockup/batch', batchFields, async (req: any, res) => {
 });
 
 // POST /api/mockup/batch/rerun-single — regenerate one batch image
-app.post('/api/mockup/batch/rerun-single', batchFields, async (req: any, res) => {
+app.post('/api/mockup/batch/rerun-single', batchFields, requireActiveSession, async (req: any, res) => {
   try {
     const photoFiles = req.files?.['photos'] || [];
     const refFiles = req.files?.['reference_photos'] || [];
@@ -2295,7 +2324,7 @@ const videoFields = videoUpload.fields([
   { name: 'audio', maxCount: 1 },
 ]);
 
-app.post('/api/mockup/video', videoFields, async (req: any, res) => {
+app.post('/api/mockup/video', videoFields, requireActiveSession, async (req: any, res) => {
   try {
     const imageFile = req.files?.['image']?.[0];
     const audioFile = req.files?.['audio']?.[0];
@@ -2443,6 +2472,49 @@ app.post('/api/mockup/video', videoFields, async (req: any, res) => {
   }
 });
 
-app.listen(Number(PORT), '127.0.0.1', () => {
+// ── Stripe Payment Endpoints ──
+
+// POST /api/checkout — create a Stripe Checkout session
+app.post('/api/checkout', async (req, res) => {
+  try {
+    const { tier } = req.body;
+    const tierConfig = TIME_PASS_TIERS[tier];
+    if (!tierConfig) return res.status(400).json({ error: 'Invalid tier. Use 1h, 4h, or 8h' });
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: `MOXXING ${tierConfig.label}`, description: `${tierConfig.minutes / 60} hour${tierConfig.minutes > 60 ? 's' : ''} of unlimited mockup generation` },
+          unit_amount: tierConfig.price,
+        },
+        quantity: 1,
+      }],
+      metadata: { tier },
+      success_url: `${FRONTEND_URL}/mockup?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${FRONTEND_URL}/mockup`,
+    });
+
+    res.json({ url: session.url });
+  } catch (e: any) {
+    console.error('Checkout session creation failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/session/:sessionId — validate a session
+app.get('/api/session/:sessionId', async (req, res) => {
+  try {
+    const result = await validateStripeSession(req.params.sessionId);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+const HOST = process.env.HOST || '127.0.0.1';
+app.listen(Number(PORT), HOST, () => {
   console.log(`Cultural Graph API running on 127.0.0.1:${PORT}`);
 });

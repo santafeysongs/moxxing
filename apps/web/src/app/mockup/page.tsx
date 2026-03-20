@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
@@ -10,6 +10,7 @@ import UploadForm from './components/UploadForm';
 import GeneratingView from './components/GeneratingView';
 import ResultsGrid from './components/ResultsGrid';
 import DeckPreview from './components/DeckPreview';
+import PaymentModal from './components/PaymentModal';
 import { Step, MockupImage, API } from './components/types';
 
 export default function MockUpPage() {
@@ -34,6 +35,65 @@ export default function MockUpPage() {
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Payment state
+  const [showPayment, setShowPayment] = useState(false);
+  const [paymentSessionId, setPaymentSessionId] = useState<string | null>(null);
+  const [remainingMinutes, setRemainingMinutes] = useState<number | null>(null);
+  const [expiresAt, setExpiresAt] = useState<Date | null>(null);
+
+  // Check for Stripe session_id on mount + restore from localStorage
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const stripeSessionId = params.get('session_id');
+    const storedSession = localStorage.getItem('moxxing_session');
+    const sid = stripeSessionId || storedSession;
+
+    if (stripeSessionId) {
+      // Clean URL
+      window.history.replaceState({}, '', '/mockup');
+    }
+
+    if (sid) {
+      validatePaymentSession(sid);
+    }
+  }, []);
+
+  // Countdown timer
+  useEffect(() => {
+    if (!expiresAt) return;
+    const tick = () => {
+      const remaining = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 60000));
+      setRemainingMinutes(remaining);
+      if (remaining <= 0) {
+        setShowPayment(true);
+        setPaymentSessionId(null);
+        localStorage.removeItem('moxxing_session');
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 30000); // Update every 30s
+    return () => clearInterval(interval);
+  }, [expiresAt]);
+
+  async function validatePaymentSession(sid: string) {
+    try {
+      const res = await fetch(`${API}/api/session/${sid}`);
+      const data = await res.json();
+      if (data.valid) {
+        setPaymentSessionId(sid);
+        setRemainingMinutes(data.remainingMinutes);
+        setExpiresAt(new Date(data.expiresAt));
+        setShowPayment(false);
+        localStorage.setItem('moxxing_session', sid);
+      } else {
+        localStorage.removeItem('moxxing_session');
+        setPaymentSessionId(null);
+      }
+    } catch {
+      // Silent fail — will prompt payment when needed
+    }
+  }
+
   // Audio state
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioStartTime, setAudioStartTime] = useState(0);
@@ -55,12 +115,29 @@ export default function MockUpPage() {
   // ── API helpers with error handling ──
 
   async function safeFetch(url: string, opts?: RequestInit): Promise<Response> {
-    const res = await fetch(url, opts);
+    // Inject X-Session-Id header
+    const headers = new Headers(opts?.headers);
+    const sid = paymentSessionId || localStorage.getItem('moxxing_session');
+    if (sid) headers.set('X-Session-Id', sid);
+    const res = await fetch(url, { ...opts, headers });
+
+    if (res.status === 402) {
+      const body = await res.json().catch(() => ({ needsPayment: true }));
+      if (body.needsPayment) {
+        setShowPayment(true);
+        throw new Error('__payment_required__');
+      }
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: `Request failed (${res.status})` }));
       throw new Error(body.error || `Request failed (${res.status})`);
     }
     return res;
+  }
+
+  function setErrorIfNotPayment(msg: string) {
+    if (msg === '__payment_required__') return;
+    setError(msg);
   }
 
   // ── Generate ──
@@ -96,7 +173,7 @@ export default function MockUpPage() {
         } else { setStep('upload'); }
       } catch (e: any) {
         console.error('Batch generation failed:', e);
-        setError(e.message || 'Generation failed — please try again');
+        setErrorIfNotPayment(e.message || 'Generation failed — please try again');
         setStep('upload');
       }
       setGenerating(false);
@@ -134,7 +211,7 @@ export default function MockUpPage() {
         }
       } catch (e: any) {
         console.error('Pinterest scrape failed:', e);
-        setError(e.message || 'Pinterest scrape failed — check the URL and try again');
+        setErrorIfNotPayment(e.message || 'Pinterest scrape failed — check the URL and try again');
         setGenerating(false);
         setStep('upload');
         return;
@@ -150,7 +227,7 @@ export default function MockUpPage() {
     const formData = new FormData();
     artistPhotos.forEach(f => formData.append('artist_photos', f));
     refs.forEach(f => formData.append('reference_photos', f));
-    formData.append('count', '30');
+    formData.append('count', '20');
     formData.append('mode', mode);
     formData.append('session_id', newSessionId);
 
@@ -166,7 +243,7 @@ export default function MockUpPage() {
       } else { setStep('upload'); }
     } catch (e: any) {
       console.error('Generation failed:', e);
-      setError(e.message || 'Generation failed — please try again');
+      setErrorIfNotPayment(e.message || 'Generation failed — please try again');
       setStep('upload');
     }
     setGenerating(false);
@@ -243,7 +320,7 @@ export default function MockUpPage() {
         setStep('results');
       } catch (e: any) {
         console.error('Rerun all failed:', e);
-        setError(e.message || 'Rerun failed');
+        setErrorIfNotPayment(e.message || 'Rerun failed');
         setStep('results');
       }
       setGenerating(false);
@@ -258,7 +335,7 @@ export default function MockUpPage() {
     const formData = new FormData();
     artistPhotos.forEach(f => formData.append('artist_photos', f));
     allRefs.forEach(f => formData.append('reference_photos', f));
-    formData.append('count', '30');
+    formData.append('count', '20');
     formData.append('mode', mode);
     formData.append('session_id', sessionId);
     try {
@@ -272,7 +349,7 @@ export default function MockUpPage() {
       setStep('results');
     } catch (e: any) {
       console.error('Rerun all failed:', e);
-      setError(e.message || 'Rerun failed');
+      setErrorIfNotPayment(e.message || 'Rerun failed');
       setStep('results');
     }
     setGenerating(false);
@@ -303,7 +380,7 @@ export default function MockUpPage() {
       } else { setStep('results'); }
     } catch (e: any) {
       console.error('Deck gen failed:', e);
-      setError(e.message || 'Deck generation failed');
+      setErrorIfNotPayment(e.message || 'Deck generation failed');
       setStep('results');
     }
     setGeneratingDeck(false);
@@ -324,7 +401,14 @@ export default function MockUpPage() {
         formData.append('audioStart', String(audioStartTime));
       }
 
-      const res = await fetch(`${API}/api/mockup/video`, { method: 'POST', body: formData });
+      const videoHeaders: Record<string, string> = {};
+      const vidSid = paymentSessionId || localStorage.getItem('moxxing_session');
+      if (vidSid) videoHeaders['X-Session-Id'] = vidSid;
+      const res = await fetch(`${API}/api/mockup/video`, { method: 'POST', body: formData, headers: videoHeaders });
+      if (res.status === 402) {
+        setShowPayment(true);
+        return;
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Unknown error' }));
         console.error('Video generation failed:', err.error);
@@ -397,33 +481,66 @@ export default function MockUpPage() {
     setGeneratingDeck(false);
   }, []);
 
+  // ── Session Timer ──
+
+  const SessionTimer = () => {
+    if (remainingMinutes === null || !paymentSessionId) return null;
+    const hours = Math.floor(remainingMinutes / 60);
+    const mins = remainingMinutes % 60;
+    const timeStr = hours > 0 ? `${hours}:${String(mins).padStart(2, '0')}` : `${mins}m`;
+    const isLow = remainingMinutes < 5;
+
+    return (
+      <div style={{
+        position: 'fixed', top: '16px', right: '16px', zIndex: 9998,
+        fontFamily: 'Unbounded, sans-serif', fontSize: '0.7rem', fontWeight: 600,
+        color: isLow ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.4)',
+        animation: isLow ? 'timerPulse 2s ease-in-out infinite' : undefined,
+        pointerEvents: 'none',
+      }}>
+        {timeStr} remaining
+      </div>
+    );
+  };
+
   // ── Render ──
 
   if (step === 'generating') {
     return (
-      <ErrorBoundary fallbackMessage="Generation encountered an error" onRetry={handleRetry}>
-        <GeneratingView onTimeout={handleGenerateTimeout} onRetry={handleRetry} />
-      </ErrorBoundary>
+      <>
+        <SessionTimer />
+        {showPayment && <PaymentModal />}
+        <ErrorBoundary fallbackMessage="Generation encountered an error" onRetry={handleRetry}>
+          <GeneratingView onTimeout={handleGenerateTimeout} onRetry={handleRetry} />
+        </ErrorBoundary>
+      </>
     );
   }
 
   if (step === 'deck') {
     return (
-      <ErrorBoundary fallbackMessage="Deck preview encountered an error" onRetry={() => setStep('results')}>
-        <DeckPreview
-          deckSlides={deckSlides}
-          deckId={deckId}
-          projectName={projectName}
-          onBack={() => setStep('results')}
-        />
-      </ErrorBoundary>
+      <>
+        <SessionTimer />
+        {showPayment && <PaymentModal />}
+        <ErrorBoundary fallbackMessage="Deck preview encountered an error" onRetry={() => setStep('results')}>
+          <DeckPreview
+            deckSlides={deckSlides}
+            deckId={deckId}
+            projectName={projectName}
+            onBack={() => setStep('results')}
+          />
+        </ErrorBoundary>
+      </>
     );
   }
 
   if (step === 'results') {
     return (
-      <ErrorBoundary fallbackMessage="Results view encountered an error" onRetry={() => setStep('upload')}>
-        <ResultsGrid
+      <>
+        <SessionTimer />
+        {showPayment && <PaymentModal />}
+        <ErrorBoundary fallbackMessage="Results view encountered an error" onRetry={() => setStep('upload')}>
+          <ResultsGrid
           mockups={mockups}
           projectName={projectName}
           rerunningIds={rerunningIds}
@@ -441,11 +558,15 @@ export default function MockUpPage() {
           onNew={handleNew}
         />
       </ErrorBoundary>
+      </>
     );
   }
 
   // step === 'upload'
   return (
+    <>
+    <SessionTimer />
+    {showPayment && <PaymentModal />}
     <ErrorBoundary fallbackMessage="Upload form encountered an error" onRetry={() => window.location.reload()}>
       {error && (
         <div style={{
@@ -479,5 +600,6 @@ export default function MockUpPage() {
         onGenerate={generate}
       />
     </ErrorBoundary>
+    </>
   );
 }

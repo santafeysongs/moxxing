@@ -1,0 +1,11 @@
+[build]
+  command = "cd ../.. && npm run build -- --filter=@cultural-graph/web"
+  publish = ".next"
+
+[build.environment]
+  NEXT_PUBLIC_API_URL = "https://api.moxxing.com"
+  NEXT_PUBLIC_STRIPE_KEY = "pk_test_51TCwYeR1Bcwu6EHvBC4WuSBkotGlYgWv3s6hkPB0Jl9EV3UJGOTGxOBJdEABagtvWoICMMECRXpXmeBCcsDtbRaO007hLhZHrZ"
+  NEXT_PUBLIC_APP_URL = "https://moxxing.com"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

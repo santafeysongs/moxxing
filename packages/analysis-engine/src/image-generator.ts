@@ -153,24 +153,22 @@ async function generateSingleImage(
 async function describeArtistAppearance(artistPhotos: ArtistPhoto[]): Promise<string> {
   if (artistPhotos.length === 0) return 'the artist (a person)';
   try {
-    const Anthropic = require('@anthropic-ai/sdk');
-    const anthropic = new Anthropic.default();
-    const imageContent = artistPhotos.slice(0, 3).map(p => ({
-      type: 'image' as const,
-      source: { type: 'base64' as const, media_type: p.mimeType, data: p.base64 },
+    const ai = getClient();
+    const imageParts = artistPhotos.slice(0, 3).map(p => ({
+      inlineData: { data: p.base64, mimeType: p.mimeType },
     }));
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 300,
-      messages: [{
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{
         role: 'user',
-        content: [
-          ...imageContent,
-          { type: 'text', text: 'Describe this person in 5-6 words max. Example: "young woman, short blonde hair" or "tall man, beard, dark skin". Just the essentials to identify them. Nothing else.' },
+        parts: [
+          ...imageParts,
+          { text: 'Describe this person in 5-6 words max. Example: "young woman, short blonde hair" or "tall man, beard, dark skin". Just the essentials to identify them. Nothing else.' },
         ],
       }],
+      config: { temperature: 0.1, maxOutputTokens: 50 },
     });
-    const desc = response.content[0]?.text?.trim() || '';
+    const desc = response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
     console.log(`  Artist description: ${desc.slice(0, 100)}...`);
     return desc || 'the artist';
   } catch (e: any) {

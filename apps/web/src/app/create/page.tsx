@@ -287,7 +287,7 @@ export default function CreatePage() {
                 if (data.nodes) {
                   setRecognizedNodes(data.nodes);
                   // Auto-select top 15 by weight
-                  const autoSelected = new Set(data.nodes.slice(0, 15).map((n: any) => n.id));
+                  const autoSelected = new Set<string>(data.nodes.slice(0, 15).map((n: any) => n.id));
                   setSelectedNodeIds(autoSelected);
                   // Build summary from auto-selected
                   const topNames = data.nodes.slice(0, 8).map((n: any) => n.name).join(', ');

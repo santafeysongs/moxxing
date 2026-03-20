@@ -11,3 +11,6 @@ coverage/
 .DS_Store
 tmp/
 data/
+
+# Local Netlify folder
+.netlify

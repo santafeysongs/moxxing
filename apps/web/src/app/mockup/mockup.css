@@ -36,6 +36,11 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes timerPulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 0.4; }
+}
+
 /* ── Chrome Button ── */
 
 .chrome-btn {
