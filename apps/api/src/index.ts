@@ -78,6 +78,9 @@ const PORT = process.env.PORT || 4000;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 app.use(cors());
+
+// Health check
+app.get('/', (_req, res) => res.json({ status: 'ok', service: 'moxxing-api' }));
 app.use(express.json({ limit: '100mb' }));
 
 // ── Persistent campaign store ──
