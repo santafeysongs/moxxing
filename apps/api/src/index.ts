@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
 import { v4 as uuid } from 'uuid';
+import rateLimit from 'express-rate-limit';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
@@ -1680,6 +1681,18 @@ async function normalizeImage(buffer: Buffer, mimetype: string): Promise<{ buffe
   return { buffer, mimeType: mimetype };
 }
 
+// ── Rate limiting for mockup endpoints ──
+const mockupRateLimit = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests — please wait a minute before trying again' },
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || 'unknown',
+});
+
+app.use('/api/mockup', mockupRateLimit);
+
 // POST /api/mockup — generate 30 mockups
 app.post('/api/mockup', mockupFields, async (req: any, res) => {
   try {
@@ -2290,59 +2303,91 @@ app.post('/api/mockup/video', videoFields, async (req: any, res) => {
     if (!imageFile) return res.status(400).json({ error: 'No image provided' });
 
     const hasAudio = !!audioFile;
-    console.log(`\n🎬 Video generation starting...${hasAudio ? ' (with audio)' : ''}`);
+    console.log(`\n🎬 Video generation starting (Kling)...${hasAudio ? ' (with audio)' : ''}`);
 
-    const { GoogleGenAI } = require('@google/genai');
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    // Kling API auth
+    const jwt = require('jsonwebtoken');
+    const klingAccessKey = process.env.KLING_ACCESS_KEY;
+    const klingSecretKey = process.env.KLING_SECRET_KEY;
+    if (!klingAccessKey || !klingSecretKey) {
+      return res.status(500).json({ error: 'KLING_ACCESS_KEY and KLING_SECRET_KEY must be set' });
+    }
 
-    // Resize image for Veo
+    const now = Math.floor(Date.now() / 1000);
+    const klingToken = jwt.sign(
+      { iss: klingAccessKey, exp: now + 1800, nbf: now - 5, iat: now },
+      klingSecretKey,
+      { algorithm: 'HS256', header: { alg: 'HS256', typ: 'JWT' } }
+    );
+
+    // Resize image for Kling
     const sharpLib = require('sharp');
     const resized = await sharpLib(imageFile.buffer)
       .resize(1280, 720, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 90 })
       .toBuffer();
 
+    const imageBase64 = resized.toString('base64');
     const videoPrompt = (req.body?.prompt as string) || 'Subtle cinematic motion. Slow camera movement, atmospheric ambient motion, gentle parallax. Photorealistic, no morphing, no distortion.';
 
-    // Start async video generation
-    const op = await ai.models.generateVideos({
-      model: 'veo-2.0-generate-001',
-      image: {
-        imageBytes: resized.toString('base64'),
-        mimeType: 'image/jpeg',
+    // Submit image-to-video task to Kling
+    const klingSubmit = await fetch('https://api.klingai.com/v1/videos/image2video', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${klingToken}`,
       },
-      prompt: videoPrompt,
-      config: {
-        numberOfVideos: 1,
-        durationSeconds: 8,
-      },
+      body: JSON.stringify({
+        prompt: videoPrompt,
+        model_name: 'kling-v3-0',
+        duration: '5',
+        aspect_ratio: '16:9',
+        mode: 'std',
+        image: `data:image/jpeg;base64,${imageBase64}`,
+      }),
     });
 
-    console.log(`  Operation: ${op.name}`);
+    const klingSubmitData: any = await klingSubmit.json();
+    if (klingSubmitData.code !== 0 || !klingSubmitData.data?.task_id) {
+      console.error('  ✗ Kling submit failed:', klingSubmitData);
+      return res.status(500).json({ error: `Kling submit failed: ${klingSubmitData.message || 'unknown error'}` });
+    }
+
+    const taskId = klingSubmitData.data.task_id;
+    console.log(`  Task: ${taskId}`);
 
     // Poll for completion (timeout after 5 minutes)
     const startTime = Date.now();
     const TIMEOUT = 5 * 60 * 1000;
-    let result = op;
+    let taskResult: any = null;
 
-    while (!result.done) {
+    while (true) {
       if (Date.now() - startTime > TIMEOUT) {
         return res.status(504).json({ error: 'Video generation timed out' });
       }
-      await new Promise(r => setTimeout(r, 10000));
-      result = await ai.operations.getVideosOperation({ operation: result });
-      console.log(`  Polling... done: ${result.done}`);
+      await new Promise(r => setTimeout(r, 5000));
+
+      const pollRes = await fetch(`https://api.klingai.com/v1/videos/image2video/${taskId}`, {
+        headers: { 'Authorization': `Bearer ${klingToken}` },
+      });
+      taskResult = await pollRes.json();
+      const status = taskResult.data?.task_status;
+      console.log(`  Polling... status: ${status}`);
+
+      if (status === 'succeed') break;
+      if (status === 'failed') {
+        return res.status(500).json({ error: `Kling generation failed: ${taskResult.data?.task_status_msg || 'unknown'}` });
+      }
     }
 
-    const video = result.response?.generatedVideos?.[0]?.video;
-    if (!video?.uri) {
-      return res.status(500).json({ error: 'No video generated' });
+    const videoUrl = taskResult.data?.task_result?.videos?.[0]?.url;
+    if (!videoUrl) {
+      return res.status(500).json({ error: 'No video URL in Kling response' });
     }
 
-    console.log(`  ✓ Video ready: ${video.uri}`);
+    console.log(`  ✓ Video ready: ${videoUrl}`);
 
-    // Download the video (needs API key auth)
-    const videoUrl = video.uri + (video.uri.includes('?') ? '&' : '?') + 'key=' + process.env.GEMINI_API_KEY;
+    // Download the video
     const videoResponse = await fetch(videoUrl);
     if (!videoResponse.ok) {
       console.error(`  ✗ Video download failed: ${videoResponse.status} ${videoResponse.statusText}`);
@@ -2367,9 +2412,9 @@ app.post('/api/mockup/video', videoFields, async (req: any, res) => {
       try {
         // Use audioStart to pick the section of the song
         const audioStart = parseFloat(req.body?.audioStart || '0') || 0;
-        // Take 8 seconds of audio starting at audioStart, fade out last 1 second
+        // Take 5 seconds of audio starting at audioStart (Kling generates 5s clips), fade out last 1 second
         execSync(
-          `ffmpeg -y -i "${videoPath}" -ss ${audioStart} -i "${audioPath}" -t 8 -filter_complex "[1:a]atrim=0:8,asetpts=PTS-STARTPTS,afade=t=out:st=7:d=1[a]" -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest "${outputPath}"`,
+          `ffmpeg -y -i "${videoPath}" -ss ${audioStart} -i "${audioPath}" -t 5 -filter_complex "[1:a]atrim=0:5,asetpts=PTS-STARTPTS,afade=t=out:st=4:d=1[a]" -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest "${outputPath}"`,
           { timeout: 30000 }
         );
         videoBuffer = fs.readFileSync(outputPath);
@@ -2389,7 +2434,7 @@ app.post('/api/mockup/video', videoFields, async (req: any, res) => {
       base64: videoBase64,
       mimeType: 'video/mp4',
       size: videoBuffer.length,
-      durationSeconds: 8,
+      durationSeconds: 5,
       hasAudio,
     });
   } catch (e: any) {

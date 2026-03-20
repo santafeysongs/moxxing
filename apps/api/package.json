@@ -9,9 +9,12 @@
   },
   "dependencies": {
     "@cultural-graph/shared": "*",
+    "@types/jsonwebtoken": "^9.0.10",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.3.1",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "uuid": "^13.0.0"
   },

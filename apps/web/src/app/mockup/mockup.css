@@ -1,0 +1,176 @@
+/* ── Keyframe Animations ── */
+
+@keyframes blurReveal {
+  from { filter: blur(24px); opacity: 0; transform: scale(1.05); }
+  to { filter: blur(0); opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { text-shadow: 0 0 80px rgba(255,255,255,0.08); }
+  50% { text-shadow: 0 0 120px rgba(255,255,255,0.15); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes chromeShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes slide {
+  0% { transform: translateX(-200%); }
+  100% { transform: translateX(500%); }
+}
+
+@keyframes mockup-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes errorFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Chrome Button ── */
+
+.chrome-btn {
+  background: linear-gradient(135deg, #e8e8e8 0%, #b8b8b8 25%, #e0e0e0 50%, #a0a0a0 75%, #d0d0d0 100%) !important;
+  background-size: 200% 200% !important;
+  animation: chromeShift 3s ease infinite !important;
+}
+
+.chrome-btn:hover {
+  box-shadow: 0 0 30px rgba(255,255,255,0.15), 0 0 60px rgba(255,255,255,0.05) !important;
+}
+
+/* ── Mockup Form Overrides ── */
+
+.mf input[type="text"],
+.mf input:not([type]) {
+  background: transparent !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 0 12px !important;
+  border-bottom: 2px solid rgba(255,255,255,0.4) !important;
+}
+
+.mf input[type="text"]::placeholder,
+.mf input:not([type])::placeholder {
+  color: rgba(255,255,255,0.35) !important;
+}
+
+.mf input[type="text"]:focus,
+.mf input:not([type]):focus {
+  box-shadow: none !important;
+  border-color: rgba(255,255,255,0.6) !important;
+}
+
+/* ── Results Grid Responsive ── */
+
+.results-grid {
+  display: grid;
+  gap: 1px;
+}
+
+@media (max-width: 768px) {
+  .results-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  .results-bar { flex-wrap: wrap; gap: 8px !important; }
+  .results-bar > div:last-child { width: 100%; display: flex; justify-content: center; flex-wrap: wrap; }
+}
+
+@media (min-width: 769px) and (max-width: 1024px) {
+  .results-grid { grid-template-columns: repeat(3, 1fr) !important; }
+}
+
+/* ── Upload Form Mobile ── */
+
+@media (max-width: 768px) {
+  .mf { padding: 40px 20px 100px !important; }
+  .mode-toggle { bottom: 24px !important; }
+  .mode-toggle button { padding: 12px 24px !important; font-size: 0.7rem !important; min-height: 44px !important; }
+  .hero-title { font-size: clamp(3.5rem, 20vw, 8rem) !important; }
+}
+
+/* ── Error UI ── */
+
+.error-boundary-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 48px 24px;
+  text-align: center;
+  animation: errorFadeIn 0.3s ease-out;
+}
+
+.error-boundary-fallback h3 {
+  font-family: var(--font-unbounded);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255,255,255,0.5);
+  margin-bottom: 16px;
+}
+
+.error-boundary-fallback p {
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.35);
+  margin-bottom: 24px;
+}
+
+.error-boundary-fallback button {
+  padding: 12px 28px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  font-family: var(--font-unbounded);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.6);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.error-boundary-fallback button:hover {
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+}
+
+/* ── Validation Error Messages ── */
+
+.upload-error {
+  font-size: 0.75rem;
+  color: #ff6b6b;
+  margin-top: 8px;
+  animation: errorFadeIn 0.2s ease-out;
+}
+
+/* ── Mobile Video Replacement ── */
+
+.video-bg {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.static-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: radial-gradient(ellipse at 30% 20%, rgba(30,30,30,1) 0%, rgba(10,10,10,1) 50%, rgba(0,0,0,1) 100%);
+  pointer-events: none;
+}
