@@ -4,15 +4,13 @@ RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy monorepo root
-COPY package.json package-lock.json ./
-COPY apps/api ./apps/api
-COPY packages ./packages
+# Copy everything
+COPY . .
 
-# Install all deps
-RUN npm ci --workspace=apps/api --include-workspace-root
+# Install all dependencies (monorepo workspaces)
+RUN npm ci || npm install
 
-# Build shared packages
+# Build shared packages that the API depends on
 RUN cd packages/shared && npx tsc || true
 RUN cd packages/graph-db && npx tsc || true
 RUN cd packages/analysis-engine && npx tsc || true
@@ -22,4 +20,6 @@ EXPOSE 4000
 ENV PORT=4000
 ENV HOST=0.0.0.0
 
-CMD ["npx", "ts-node", "--transpile-only", "apps/api/src/index.ts"]
+WORKDIR /app/apps/api
+
+CMD ["npx", "ts-node", "--transpile-only", "src/index.ts"]
